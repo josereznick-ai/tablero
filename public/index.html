@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tablero de trabajo</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Outfit:wght@300;400;500;600&display=swap');
+  * { box-sizing: border-box; margin: 0; }
+  body { font-family: 'Outfit', system-ui, sans-serif; background: #e8e0d2; color: #2a2520; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 28px 24px; }
+  h1, h2 { font-family: 'Fraunces', serif; }
+  input, select { padding: 9px 12px; border: 1px solid #cfc6b4; border-radius: 8px; font-size: 14px; background: #fff; font-family: inherit; outline: none; }
+  button { font-family: inherit; cursor: pointer; }
+  .btn { padding: 9px 16px; background: #2a2520; color: #fff; border: none; border-radius: 8px; font-size: 14px; }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .card { background: #fff; border-radius: 8px; padding: 9px 10px; margin-bottom: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .col { background: #f3eee3; border-radius: 12px; padding: 10px; min-height: 200px; }
+  .pill { font-size: 11px; color: #fff; padding: 2px 7px; border-radius: 10px; }
+  .x { border: none; background: transparent; color: #b5485c; font-size: 12px; opacity: .6; }
+  .grid4 { display: grid; grid-template-columns: repeat(4,1fr); gap: 12px; }
+  .tabbtn { padding: 6px 16px; border: none; background: transparent; border-radius: 7px; font-size: 13px; color: #6b6052; }
+  .tabbtn.active { background: #fff; color: #2a2520; font-weight: 600; }
+  .err { background: #f8d7da; color: #842029; padding: 8px 12px; border-radius: 8px; font-size: 13px; margin: 10px 0; }
+  .center { max-width: 360px; margin: 8vh auto; text-align: center; }
+  .center input { width: 100%; margin-bottom: 10px; }
+  .cal { display: grid; grid-template-columns: repeat(7,1fr); gap: 4px; }
+  .cell { aspect-ratio: 1; border: 1px solid #e0d8c8; border-radius: 8px; background: #fff; position: relative; font-size: 13px; }
+  .cell.sel { background: #3a6ea5; color: #fff; }
+  .cell.today { border-color: #c9a227; }
+  .dot { position: absolute; bottom: 5px; left: 50%; transform: translateX(-50%); width: 5px; height: 5px; border-radius: 50%; background: #b5485c; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+</style>
+</head>
+<body>
+<div class="wrap" id="app"></div>
+
+<script>
+const API = ""; // mismo origen
+let token = localStorage.getItem("token");
+let user = JSON.parse(localStorage.getItem("user") || "null");
+let boards = [], boardId = null, members = [], tasks = [], events = [];
+let tab = "board";
+let calRef = new Date(); let selDate = new Date().toISOString().slice(0,10);
+
+const COLS = [["todo","Pendiente","#c9a227"],["doing","En curso","#3a6ea5"],["review","En revisión","#a05a2c"],["done","Concluido","#4f7a4f"]];
+const PALETTE = ["#7c4a3a","#3a6ea5","#4f7a4f","#a05a2c","#6b4e8c","#b5485c","#2d6e6e"];
+const colorFor = s => { let h=0; for(const c of String(s||"")) h=(h*31+c.charCodeAt(0))>>>0; return PALETTE[h%PALETTE.length]; };
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+async function api(path, opts={}) {
+  const r = await fetch(API + path, {
+    ...opts,
+    headers: { "Content-Type": "application/json", ...(token ? { Authorization: "Bearer " + token } : {}), ...(opts.headers||{}) }
+  });
+  if (!r.ok) throw new Error((await r.json().catch(()=>({}))).error || "Error " + r.status);
+  return r.json();
+}
+
+/* ---- Autenticación ---- */
+async function doAuth(mode) {
+  const email = document.getElementById("email").value;
+  const password = document.getElementById("password").value;
+  const name = mode === "register" ? document.getElementById("name").value : null;
+  try {
+    const body = mode === "register" ? { email, name, password } : { email, password };
+    const res = await api("/api/" + mode, { method: "POST", body: JSON.stringify(body) });
+    token = res.token; user = res.user;
+    localStorage.setItem("token", token); localStorage.setItem("user", JSON.stringify(user));
+    await loadBoards(); render();
+  } catch (e) { showErr(e.message); }
+}
+function logout() { localStorage.clear(); token=null; user=null; boardId=null; render(); }
+function showErr(m){ const el=document.getElementById("err"); if(el){el.textContent=m; el.style.display="block";} }
+
+/* ---- Carga de datos ---- */
+async function loadBoards(){ boards = await api("/api/boards"); if(!boardId && boards[0]) boardId = boards[0].id; }
+async function loadBoard(){
+  if(!boardId) return;
+  [members, tasks, events] = await Promise.all([
+    api(`/api/boards/${boardId}/members`),
+    api(`/api/boards/${boardId}/tasks`),
+    api(`/api/boards/${boardId}/events`),
+  ]);
+}
+async function refresh(){ if(token && boardId){ try{ await loadBoard(); render(); }catch(e){} } }
+setInterval(refresh, 6000);
+
+/* ---- Acciones ---- */
+async function newBoard(){ const name=prompt("Nombre del tablero:"); if(!name)return;
+  const b=await api("/api/boards",{method:"POST",body:JSON.stringify({name})}); boardId=b.id; await loadBoards(); await loadBoard(); render(); }
+async function invite(){ const email=prompt("Email del usuario a invitar:"); if(!email)return;
+  try{ await api(`/api/boards/${boardId}/members`,{method:"POST",body:JSON.stringify({email})}); await loadBoard(); render(); }catch(e){alert(e.message);} }
+async function addTask(){ const t=document.getElementById("nt").value.trim(); if(!t)return;
+  const a=document.getElementById("na").value || null;
+  await api(`/api/boards/${boardId}/tasks`,{method:"POST",body:JSON.stringify({title:t,assignee_id:a})}); await loadBoard(); render(); }
+async function moveTask(id,status){ const t=tasks.find(x=>x.id===id);
+  try{ await api(`/api/boards/${boardId}/tasks/${id}`,{method:"PATCH",body:JSON.stringify({status,version:t.version})}); }
+  catch(e){ alert(e.message); } await loadBoard(); render(); }
+async function delTask(id){ await api(`/api/boards/${boardId}/tasks/${id}`,{method:"DELETE"}); await loadBoard(); render(); }
+async function addEvent(){ const t=document.getElementById("ne").value.trim(); if(!t)return;
+  await api(`/api/boards/${boardId}/events`,{method:"POST",body:JSON.stringify({date:selDate,title:t})}); await loadBoard(); render(); }
+async function delEvent(id){ await api(`/api/boards/${boardId}/events/${id}`,{method:"DELETE"}); await loadBoard(); render(); }
+
+let dragId=null;
+
+/* ---- Render ---- */
+function render(){
+  const app=document.getElementById("app");
+  if(!token){ app.innerHTML = authView(); return; }
+  app.innerHTML = `
+    <header class="row" style="justify-content:space-between;margin-bottom:18px">
+      <div><h1 style="font-size:26px">Tablero de trabajo</h1>
+        <span style="font-size:13px;opacity:.55">Hola, <strong style="color:${colorFor(user.name)}">${esc(user.name)}</strong></span></div>
+      <div class="row">
+        <select onchange="boardId=Number(this.value);loadBoard().then(render)">
+          ${boards.map(b=>`<option value="${b.id}" ${b.id===boardId?"selected":""}>${esc(b.name)}</option>`).join("")}
+        </select>
+        <button class="btn" onclick="newBoard()">+ Tablero</button>
+        <button class="tabbtn" onclick="logout()">Salir</button>
+      </div>
+    </header>
+    ${boardId ? `
+    <div class="row" style="justify-content:space-between;margin-bottom:16px">
+      <div style="background:#ece5d8;padding:4px;border-radius:10px">
+        <button class="tabbtn ${tab==='board'?'active':''}" onclick="tab='board';render()">Tareas</button>
+        <button class="tabbtn ${tab==='calendar'?'active':''}" onclick="tab='calendar';render()">Calendario</button>
+      </div>
+      <div class="row" style="font-size:12px;opacity:.6">
+        ${members.map(m=>`<span class="pill" style="background:${colorFor(m.name)}">${esc(m.name)}</span>`).join("")}
+        <button class="tabbtn" onclick="invite()">+ Invitar</button>
+      </div>
+    </div>
+    ${tab==="board" ? boardView() : calView()}
+    ` : `<p style="opacity:.6">Creá tu primer tablero para empezar.</p>`}
+  `;
+}
+
+function authView(){
+  return `<div class="center">
+    <h2 style="font-size:30px;margin-bottom:6px">Tablero de trabajo</h2>
+    <p style="opacity:.6;margin-bottom:22px;font-size:14px">Ingresá con tu cuenta o registrate.</p>
+    <div id="err" class="err" style="display:none"></div>
+    <input id="name" placeholder="Nombre (solo para registro)">
+    <input id="email" placeholder="Email" type="email">
+    <input id="password" placeholder="Contraseña (6+)" type="password">
+    <div class="row" style="margin-top:8px">
+      <button class="btn" style="flex:1" onclick="doAuth('login')">Ingresar</button>
+      <button class="btn" style="flex:1;background:#7c4a3a" onclick="doAuth('register')">Registrarme</button>
+    </div>
+  </div>`;
+}
+
+function boardView(){
+  const opts = members.map(m=>`<option value="${m.id}">${esc(m.name)}</option>`).join("");
+  return `
+    <div class="row" style="margin-bottom:18px">
+      <input id="nt" placeholder="Nueva tarea…" style="flex:2;min-width:200px" onkeydown="if(event.key==='Enter')addTask()">
+      <select id="na" style="flex:1"><option value="">Sin responsable</option>${opts}</select>
+      <button class="btn" onclick="addTask()">Agregar</button>
+    </div>
+    <div class="grid4">
+      ${COLS.map(([id,label,accent])=>{
+        const items=tasks.filter(t=>t.status===id);
+        return `<div class="col" style="border-top:3px solid ${accent}"
+            ondragover="event.preventDefault()" ondrop="if(dragId){moveTask(dragId,'${id}');dragId=null}">
+          <div class="row" style="justify-content:space-between;font-size:13px;font-weight:600;color:${accent};margin-bottom:10px">
+            <span>${label}</span><span style="opacity:.5">${items.length}</span></div>
+          ${items.map(t=>`<div class="card" draggable="true" ondragstart="dragId=${t.id}">
+            <div style="font-size:14px;margin-bottom:6px">${esc(t.title)}</div>
+            <div class="row" style="justify-content:space-between">
+              <span class="pill" style="background:${colorFor(t.assignee_name||'—')}">${esc(t.assignee_name||"Sin asignar")}</span>
+              <button class="x" onclick="delTask(${t.id})">✕</button>
+            </div></div>`).join("")}
+        </div>`;
+      }).join("")}
+    </div>
+    <p style="font-size:12px;opacity:.45;margin-top:14px">Arrastrá las tarjetas entre columnas. Los cambios se sincronizan cada 6 segundos.</p>`;
+}
+
+function calView(){
+  const y=calRef.getFullYear(), m=calRef.getMonth();
+  const first=new Date(y,m,1).getDay(), days=new Date(y,m+1,0).getDate();
+  const monthName=calRef.toLocaleDateString("es-AR",{month:"long",year:"numeric"});
+  const today=new Date().toISOString().slice(0,10);
+  const ds=d=>`${y}-${String(m+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+  let cells="";
+  for(let i=0;i<first;i++) cells+=`<div></div>`;
+  for(let d=1;d<=days;d++){ const s=ds(d); const has=events.some(e=>e.date===s);
+    cells+=`<button class="cell ${s===selDate?'sel':''} ${s===today?'today':''}" onclick="selDate='${s}';render()">${d}${has?'<span class="dot"></span>':''}</button>`; }
+  const dayEv=events.filter(e=>e.date===selDate);
+  return `<div style="display:grid;grid-template-columns:2fr 1fr;gap:20px;align-items:start">
+    <div>
+      <div class="row" style="justify-content:space-between;margin-bottom:12px">
+        <button class="btn" style="background:#fff;color:#2a2520" onclick="calRef=new Date(${y},${m-1},1);render()">‹</button>
+        <strong style="font-family:'Fraunces',serif;font-size:18px;text-transform:capitalize">${monthName}</strong>
+        <button class="btn" style="background:#fff;color:#2a2520" onclick="calRef=new Date(${y},${m+1},1);render()">›</button>
+      </div>
+      <div class="cal">${["D","L","M","M","J","V","S"].map(d=>`<div style="text-align:center;font-size:11px;opacity:.5;padding:4px">${d}</div>`).join("")}${cells}</div>
+    </div>
+    <div class="col">
+      <div style="font-size:13px;font-weight:600;margin-bottom:10px">${new Date(selDate+"T00:00:00").toLocaleDateString("es-AR",{weekday:"long",day:"numeric",month:"long"})}</div>
+      <div class="row" style="margin-bottom:12px">
+        <input id="ne" placeholder="Evento…" style="flex:1" onkeydown="if(event.key==='Enter')addEvent()">
+        <button class="btn" onclick="addEvent()">+</button>
+      </div>
+      ${dayEv.length?dayEv.map(e=>`<div class="card row" style="justify-content:space-between">
+        <div><div style="font-size:14px">${esc(e.title)}</div><span style="font-size:10px;color:${colorFor(e.author_name)}">${esc(e.author_name)}</span></div>
+        <button class="x" onclick="delEvent(${e.id})">✕</button></div>`).join(""):'<p style="font-size:13px;opacity:.45">Sin eventos.</p>'}
+    </div>
+  </div>`;
+}
+
+/* ---- Init ---- */
+(async()=>{ if(token){ try{ await loadBoards(); await loadBoard(); }catch(e){ logout(); } } render(); })();
+</script>
+</body>
+</html>
